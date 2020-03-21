@@ -67,7 +67,7 @@ class EmbeddedPlatform(Memorable):
                  completion_queues):
         super().__init__()
 
-        self.logger = logger.bind(component=self.ENDPOINT_NAME)
+        self.logger = LOGGER.bind(component=self.ENDPOINT_NAME)
 
         self.env = env
 
@@ -148,7 +148,7 @@ class HostPlatform(Memorable):
     def __init__(self, env, network_fabric):
         super().__init__()
 
-        self.logger = logger.bind(component=self.ENDPOINT_NAME)
+        self.logger = LOGGER.bind(component=self.ENDPOINT_NAME)
 
         self.env = env
 
@@ -192,6 +192,8 @@ class HostPlatform(Memorable):
 
 # pylint: disable=too-few-public-methods
 class App:
+    _SUBMIT_COMM_DELAY_PER_BYTE = MICROSECOND
+
     def __init__(self, env, submission_queues):
         self.env = env
         self.submission_queues = submission_queues
@@ -202,8 +204,12 @@ class App:
         for comm_idx in range(
                 self.cryptogen.randrange(comms_per_app[1] - comms_per_app[0]) +
                 comms_per_app[0]):
+            data_length = 4 * 1024  # 4K data size
+            yield self.env.timeout(data_length *
+                                   self._SUBMIT_COMM_DELAY_PER_BYTE)
+
             submit_comm = SubmissionCommand(
-                "{:d}-{:d}".format(app_idx, comm_idx), 4 * 1024, False, 0,
+                "{:d}-{:d}".format(app_idx, comm_idx), data_length, True, 0,
                 self.env.now)
             submission_queue = self.submission_queues[
                 app_idx % HostPlatform.NUM_PROCESSORS_HOST]
@@ -286,10 +292,16 @@ class EventTracer:
 
 
 TRACER = None
+LOGGER = None
 
 
 def main():
     env = simpy.Environment()
+
+    # pylint: disable=global-statement
+    global LOGGER
+    LOGGER = logger.patch(
+        lambda record: record["extra"].update(current=env.now))
 
     network_fabric = NetworkFabric(env)
 
@@ -332,8 +344,8 @@ if __name__ == "__main__":
     logger.add("output/data.log",
                level='TRACE',
                filter=lambda record: 'by_processor' in record['extra'],
-               format=("[{extra[component]: <8} @ {extra[by_processor]: <2}]"
-                       " <level>{message}</level>"),
+               format=("[{extra[component]: <8} p {extra[by_processor]: <2}]"
+                       " <level>{message}</level> @ {extra[current]}"),
                enqueue=True)
 
     # selectivity: range is [0, 1]
