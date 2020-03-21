@@ -37,7 +37,7 @@ class NetworkFabric:
 
         yield self.cable.put(data_packet.length)
 
-        yield self.env.timeout(data_packet.length / self.cable.capacity * 1e6)
+        yield self.env.timeout(data_packet.length / self.cable.capacity * 1e9)
         yield self.cable.get(data_packet.length)
 
         self.endpoints[endpoint_name].memorize(data_packet.command_id,
@@ -204,12 +204,14 @@ class App:
         for comm_idx in range(
                 self.cryptogen.randrange(comms_per_app[1] - comms_per_app[0]) +
                 comms_per_app[0]):
-            data_length = 4 * 1024  # 4K data size
+            data_length = 4 * 1024 * 10  # 4 MiB data size
+
+            # emulate the time taken to generate the data
             yield self.env.timeout(data_length *
                                    self._SUBMIT_COMM_DELAY_PER_BYTE)
 
             submit_comm = SubmissionCommand(
-                "{:d}-{:d}".format(app_idx, comm_idx), data_length, True, 0,
+                "{:d}-{:d}".format(app_idx, comm_idx), data_length, True, 0.7,
                 self.env.now)
             submission_queue = self.submission_queues[
                 app_idx % HostPlatform.NUM_PROCESSORS_HOST]
@@ -323,13 +325,17 @@ def main():
     TRACER = EventTracer(env)
 
     # Uncomment the following line so that you can print
-    # the event history with TRACER.print_trace_data()
+    # the event history with TRACER.print_trace_data() at
+    # wherever you want.
 
     # TRACER.trace()
 
     ###############################
 
     env.run()
+
+    # Or you can print the event history at the end.
+    # TRACER.print_trace_data()
 
 
 if __name__ == "__main__":
@@ -341,7 +347,7 @@ if __name__ == "__main__":
 
     from loguru import logger
 
-    logger.add("output/data.log",
+    logger.add("output/data_{time}.log",
                level='TRACE',
                filter=lambda record: 'by_processor' in record['extra'],
                format=("[{extra[component]: <8} p {extra[by_processor]: <2}]"
