@@ -190,7 +190,6 @@ class HostPlatform(Memorable):
         return self.completion_queues
 
 
-# pylint: disable=too-few-public-methods
 class App:
     _SUBMIT_COMM_DELAY_PER_BYTE = MICROSECOND
 
@@ -200,22 +199,26 @@ class App:
 
         self.cryptogen = SystemRandom()
 
+        self.total_data_length = 0
+
     def __start(self, app_idx, comms_per_app):
+        data_length = 4 * 1024 * 1024  # 4 MiB data size
+
         for comm_idx in range(
                 self.cryptogen.randrange(comms_per_app[1] - comms_per_app[0]) +
                 comms_per_app[0]):
-            data_length = 4 * 1024 * 10  # 4 MiB data size
-
             # emulate the time taken to generate the data
             yield self.env.timeout(data_length *
                                    self._SUBMIT_COMM_DELAY_PER_BYTE)
 
             submit_comm = SubmissionCommand(
-                "{:d}-{:d}".format(app_idx, comm_idx), data_length, True, 0.7,
+                "{:d}-{:d}".format(app_idx, comm_idx), data_length, True, 0.5,
                 self.env.now)
             submission_queue = self.submission_queues[
                 app_idx % HostPlatform.NUM_PROCESSORS_HOST]
             yield submission_queue.put(submit_comm)
+
+            self.total_data_length += data_length
 
     def start_batch(self, num, comms_per_app=(500, 1000)):
         """
@@ -232,6 +235,9 @@ class App:
         """
         for app_idx in range(num):
             self.env.process(self.__start(app_idx, comms_per_app))
+
+    def get_total_data_length(self):
+        return self.total_data_length
 
 
 # pylint: disable=too-few-public-methods
@@ -315,7 +321,8 @@ def main():
                                          host_platform.get_completion_queues())
     embedded_platform.start()
 
-    App(env, host_platform.get_submission_queues()).start_batch(5, (300, 500))
+    app = App(env, host_platform.get_submission_queues())
+    app.start_batch(HostPlatform.NUM_PROCESSORS_HOST, (40, 50))
 
     # event tracing
     ###############################
@@ -336,6 +343,11 @@ def main():
 
     # Or you can print the event history at the end.
     # TRACER.print_trace_data()
+
+    _logger = LOGGER.bind(component="simulator")
+    _logger.debug("total data length is {:d} bytes.".format(
+        app.get_total_data_length()))
+    _logger.debug("simulation has successfully finished.")
 
 
 if __name__ == "__main__":
