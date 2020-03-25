@@ -5,6 +5,8 @@ from abc import ABC
 
 
 class Memorable(ABC):
+    __slots__ = ()
+
     def __init__(self):
         self.__cache = {}
 
