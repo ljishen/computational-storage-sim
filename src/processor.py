@@ -32,27 +32,55 @@ class Processor:
 
     class Task:
         # pylint: disable=too-few-public-methods,invalid-name
-        __slots__ = ('id', 'core_id', 'cycles', 'cb_event')
+        """
+        A Task definition for Processor.
 
-        def __init__(self, id_, core_id, cycles):
+        Args:
+        ----
+            id_ (str): The identity of the task.
+            core_id (Union[int, None]): The core the task will be assigned to
+                for processing. Defaults to None, which means it will be
+                arbitrarily assigned to an available core at runtime.
+            cycles (Union[float, int]): The number of cycles the task requests.
+            priority (int): The lower the number, the higher the priority of
+                the task. Defaults to 0.
+
+        """
+
+        PRIORITY_HIGH = -1
+        PRIORITY_DEFAULT = 0
+        PRIORITY_LOW = 19
+
+        __slots__ = ('id', 'core_id', 'cycles', 'priority', 'cb_event')
+
+        def __init__(self, id_, core_id, cycles, priority=PRIORITY_DEFAULT):
             self.id = id_
-            self.core_id = core_id
 
-            self.cycles = int(cycles)  # type: int
+            self.core_id = self.__get_int_type("core_id",
+                                               core_id) if core_id else core_id
 
-            if self.cycles != cycles:
-                raise RuntimeError(
-                    self.__class__.__name__ +
-                    "(id=%r) does not have integer cycles (=%r)" %
-                    (self.id, cycles))
+            self.cycles = self.__get_int_type("cycles", cycles)  # type: int
+            self.priority = self.__get_int_type("priority",
+                                                priority)  # type: int
 
             self.cb_event = None
+
+        def __get_int_type(self, name, param):
+            if int(param) != param:
+                raise RuntimeError(self.__class__.__name__ +
+                                   "(id=%r) does not have integer %r (=%r)" %
+                                   (self.id, name, param))
+            return int(param)
 
         def __repr__(self):
             """Return a nicely formatted representation string."""
             return self.__class__.__name__ + \
-                '(id=%r, core_id=%r, cycles=%r, cb_event=%r)' % \
-                (self.id, self.core_id, self.cycles, self.cb_event)
+                '(id=%r, core_id=%r, cycles=%r, priority=%r, cb_event=%r)' % \
+                (self.id,
+                 self.core_id,
+                 self.cycles,
+                 self.priority,
+                 self.cb_event)
 
     def __init__(self, env, host, num_cores, frequency, step_cycles=1):
         # pylint: disable=too-many-arguments
@@ -73,7 +101,7 @@ class Processor:
                 "(host=%r) does not support non-integer step_cycles (=%r)" %
                 (host, step_cycles))
 
-        self.__waiting_tasks = simpy.Store(env)
+        self.__waiting_tasks = simpy.PriorityStore(env)
         self.__on_core_tasks = {}
 
     def __repr__(self):
@@ -86,8 +114,8 @@ class Processor:
              self.__step_cycles)
 
     def __assign(self, core_id, task):
-        _task = yield self.__waiting_tasks.get()
-        assert _task.id == task.id  # nosec
+        priority_item = yield self.__waiting_tasks.get()
+        assert priority_item.item.id == task.id  # nosec
 
         self.__on_core_tasks[core_id] = task
         self.__logger.debug("assigned {} to core {:d}", task, core_id)
@@ -126,7 +154,7 @@ class Processor:
     def __loop(self):
         while True:
             while len(self.__waiting_tasks.items) > 0:
-                task = self.__waiting_tasks.items[0]
+                task = self.__waiting_tasks.items[0].item
 
                 assigned = False
                 if isinstance(task.core_id, int):
@@ -159,7 +187,7 @@ class Processor:
                      str(task), self.__step_cycles))
 
         task.cb_event = self.__env.event()
-        yield self.__waiting_tasks.put(task)
+        yield self.__waiting_tasks.put(simpy.PriorityItem(task.priority, task))
         return task.cb_event
 
 
@@ -172,7 +200,10 @@ def run_workload(env, processor, shutdown_hook):
     for idx in range(num_tasks):
         cb_event = yield env.process(
             processor.submit(
-                Processor.Task(idx, idx % processor.num_cores, 1e3)))
+                Processor.Task(idx,
+                               idx % processor.num_cores,
+                               1e3,
+                               priority=num_tasks - idx)))
         events.append(cb_event)
 
     for cb_event in events:

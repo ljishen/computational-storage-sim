@@ -24,7 +24,7 @@ class EmbeddedPlatform(Memorable):
     #       Koo, Gunjae, et al. "Summarizer: trading communication with
     #       computing near storage." 2017 50th Annual IEEE/ACM International
     #       Symposium on Microarchitecture (MICRO). IEEE, 2017.)
-    _CPU_CYCLES_PER_DATA_ACCESS = _CORE_FREQUENCY * 0.3
+    _CPU_CYCLES_PER_DATA_ACCESS = _CORE_FREQUENCY * 0.004
 
     _CPU_CYCLES_PER_KILOBYTE_COMPUTE = 1e1 * 1e3
 
@@ -61,7 +61,8 @@ class EmbeddedPlatform(Memorable):
                 self.__processor.submit(
                     Processor.Task(
                         comm.id + "-COMPUTE", None,
-                        comm.length * self._CPU_CYCLES_PER_KILOBYTE_COMPUTE)))
+                        comm.length * self._CPU_CYCLES_PER_KILOBYTE_COMPUTE,
+                        Processor.Task.PRIORITY_HIGH)))
             core_id = yield event
             ret_isp = True
             ret_length = comm.length * (1 - comm.selectivity)
@@ -132,7 +133,8 @@ class HostPlatform(Memorable):
         self.submission_queues = []
         self.completion_queues = []
 
-        self.shutdown_hook = None
+        self.__all_command_submitted = None
+        self.__shutdown_hook = None
         self.summary = {
             "num_commands_submitted": 0,
             "num_commands_completed": 0,
@@ -151,16 +153,19 @@ class HostPlatform(Memorable):
                             Processor.Task(
                                 comm.id + "-COMPUTE", queue_idx,
                                 data_packet.length *
-                                self._CPU_CYCLES_PER_KILOBYTE_COMPUTE)))
+                                self._CPU_CYCLES_PER_KILOBYTE_COMPUTE,
+                                Processor.Task.PRIORITY_HIGH)))
                     core_id = yield event
                     assert core_id == queue_idx  # nosec
 
                     self.__logger.bind(by_core=core_id).trace(comm)
 
                 self.summary["num_commands_completed"] += 1
-                if self.summary["num_commands_submitted"] == self.summary[
-                        "num_commands_completed"]:
-                    self.shutdown_hook.succeed()
+
+                if (self.summary["num_commands_submitted"] ==
+                        self.summary["num_commands_completed"]
+                        and self.__all_command_submitted.processed):
+                    self.__shutdown_hook.succeed()
 
     def start(self):
         self.__processor.run()
@@ -181,9 +186,9 @@ class HostPlatform(Memorable):
                             "submission_queues and completion_queues")
 
     def set_shutdown_hook(self, shutdown_hook):
-        self.shutdown_hook = shutdown_hook
+        self.__shutdown_hook = shutdown_hook
 
-    def __app(self, app_idx, comms_per_app):
+    def __app(self, app_idx, comms_per_app, event_submitted):
         data_length = 4 * 1e3  # 4 MB data size
 
         for idx in range(
@@ -213,6 +218,8 @@ class HostPlatform(Memorable):
             self.summary["num_commands_submitted"] += 1
             self.summary["total_data_bytes"] += data_length
 
+        event_submitted.succeed()
+
     def run_apps(self, num, comms_per_app=(500, 1000)):
         """
         Start a number of apps to generate submission commands.
@@ -226,8 +233,14 @@ class HostPlatform(Memorable):
                 will be a <= x < b.
 
         """
+        events = []
         for app_idx in range(num):
-            self.__env.process(self.__app(app_idx, comms_per_app))
+            event_submitted = self.__env.event()
+            self.__env.process(
+                self.__app(app_idx, comms_per_app, event_submitted))
+            events.append(event_submitted)
+
+        self.__all_command_submitted = simpy.AllOf(self.__env, events)
 
 
 TRACER = None
