@@ -101,12 +101,13 @@ class EmbeddedPlatform(Memorable):
         self.__logger.debug("platform has started")
 
 
-# pylint: disable=too-many-instance-attributes
 class HostPlatform(Memorable):
+    # pylint: disable=too-many-instance-attributes
+
     ENDPOINT_NAME = "host"
 
     _CPU_CYCLES_PER_KILOBYTE_COMPUTE = 1e1 * 1e3
-    _CPU_CYCLES_PER_KILOBYTE_GENERATE = 1e2 * 1e3
+    _CPU_CYCLES_PER_KILOBYTE_GENERATE = 1e1 * 1e3
 
     _RECEIVE_SUBMISSION_COMM_DELAY_PER_KILOBYTE = 1e3
 
@@ -271,7 +272,7 @@ def main():
                                          host_platform.completion_queues)
     embedded_platform.start()
 
-    host_platform.run_apps(24, (10, 20))
+    host_platform.run_apps(24, (20, 30))
 
     # event tracing
     ###############################

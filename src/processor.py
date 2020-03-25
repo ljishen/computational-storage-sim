@@ -42,7 +42,7 @@ class Processor:
                 for processing. Defaults to None, which means it will be
                 arbitrarily assigned to an available core at runtime.
             cycles (Union[float, int]): The number of cycles the task requests.
-            priority (int): The lower the number, the higher the priority of
+            priority (float): The lower the number, the higher the priority of
                 the task. Defaults to 0.
 
         """
@@ -60,8 +60,7 @@ class Processor:
                                                core_id) if core_id else core_id
 
             self.cycles = self.__get_int_type("cycles", cycles)  # type: int
-            self.priority = self.__get_int_type("priority",
-                                                priority)  # type: int
+            self.priority = float(priority)
 
             self.cb_event = None
 
@@ -153,6 +152,8 @@ class Processor:
 
     def __loop(self):
         while True:
+            remaining_waiting_tasks = simpy.PriorityStore(self.__env)
+
             while len(self.__waiting_tasks.items) > 0:
                 task = self.__waiting_tasks.items[0].item
 
@@ -170,8 +171,17 @@ class Processor:
                             assigned = True
                             break
 
-                if not assigned:
+                if len(self.__on_core_tasks) == self.num_cores:
                     break
+
+                if not assigned:
+                    priority_item = yield self.__waiting_tasks.get()
+                    yield remaining_waiting_tasks.put(priority_item)
+
+            while len(self.__waiting_tasks.items) > 0:
+                priority_item = yield self.__waiting_tasks.get()
+                yield remaining_waiting_tasks.put(priority_item)
+            self.__waiting_tasks = remaining_waiting_tasks
 
             yield self.__env.process(self.__advance())
 
@@ -187,6 +197,10 @@ class Processor:
                      str(task), self.__step_cycles))
 
         task.cb_event = self.__env.event()
+
+        if task.priority == self.Task.PRIORITY_DEFAULT:
+            task.priority = self.__env.now
+
         yield self.__waiting_tasks.put(simpy.PriorityItem(task.priority, task))
         return task.cb_event
 
