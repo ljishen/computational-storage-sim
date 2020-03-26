@@ -27,6 +27,8 @@ class EmbeddedPlatform(Memorable):
     _CPU_CYCLES_PER_DATA_ACCESS = _CORE_FREQUENCY * 0.004
 
     _CPU_CYCLES_PER_KILOBYTE_COMPUTE = 1e1 * 1e3
+    _CPU_CYCLES_PER_KILOBYTE_SEND = 1e1 * 1e2
+    _CPU_CYCLES_PER_KILOBYTE_RECEIVE = 1e1 * 1e3
 
     def __init__(self, env, network_fabric, submission_queues,
                  completion_queues):
@@ -35,17 +37,44 @@ class EmbeddedPlatform(Memorable):
         self.__logger = LOGGER.bind(component=self.ENDPOINT_NAME)
 
         self.__env = env
-
         self.__network_fabric = network_fabric
+
         self.__processor = Processor(
             env,
             self.ENDPOINT_NAME,
             2,
             self._CORE_FREQUENCY,
-            step_cycles=self._CPU_CYCLES_PER_KILOBYTE_COMPUTE)
+            step_cycles=min(self._CPU_CYCLES_PER_KILOBYTE_COMPUTE,
+                            self._CPU_CYCLES_PER_KILOBYTE_SEND,
+                            self._CPU_CYCLES_PER_KILOBYTE_RECEIVE))
 
         self.__submission_queues = submission_queues
         self.__completion_queues = completion_queues
+
+    def __network_send(self, endpoint_name, data_packet):
+        endpoint = self.__network_fabric.get_endpoint(endpoint_name)
+
+        yield self.__env.process(
+            self.__network_fabric.request(data_packet.length))
+        try:
+            send_event = yield self.__env.process(
+                self.__processor.submit(
+                    Processor.Task(
+                        data_packet.id + "-SEND", None, data_packet.length *
+                        self._CPU_CYCLES_PER_KILOBYTE_SEND,
+                        Processor.Task.PRIORITY_HIGH)))
+
+            receive_event = yield self.__env.process(
+                endpoint.network_receive(data_packet))
+
+            transmit_event = self.__env.process(
+                self.__network_fabric.transmit(data_packet.length))
+
+            yield send_event & receive_event & transmit_event
+        finally:
+            endpoint.memorize(data_packet.id, data_packet)
+            yield self.__env.process(
+                self.__network_fabric.release(data_packet.length))
 
     def __do_process(self, comm, queue_idx):
         event = yield self.__env.process(
@@ -68,9 +97,8 @@ class EmbeddedPlatform(Memorable):
             ret_length = comm.length * (1 - comm.selectivity)
 
         yield self.__env.process(
-            self.__network_fabric.send(
-                HostPlatform.ENDPOINT_NAME,
-                NetworkFabric.DataPacket(comm.id, ret_length)))
+            self.__network_send(HostPlatform.ENDPOINT_NAME,
+                                DataPacket(comm.id, queue_idx, ret_length)))
 
         # place the CompletionCommand on the completion queue
         # of the same core
@@ -106,8 +134,11 @@ class HostPlatform(Memorable):
 
     ENDPOINT_NAME = "host"
 
-    _CPU_CYCLES_PER_KILOBYTE_COMPUTE = 1e1 * 1e3
     _CPU_CYCLES_PER_KILOBYTE_GENERATE = 1e1 * 1e3
+    _CPU_CYCLES_PER_KILOBYTE_COMPUTE = 1e1 * 1e3
+
+    _CPU_CYCLES_PER_KILOBYTE_SEND = 1e1 * 1e2
+    _CPU_CYCLES_PER_KILOBYTE_RECEIVE = 1e1 * 1e3
 
     _RECEIVE_SUBMISSION_COMM_DELAY_PER_KILOBYTE = 1e3
 
@@ -121,15 +152,17 @@ class HostPlatform(Memorable):
 
         self.__env = env
         self.__cryptogen = SystemRandom()
-
         self.__network_fabric = network_fabric
+
         self.__processor = Processor(
             env,
             self.ENDPOINT_NAME,
             24,
             2.6 * Processor.FREQUENCY_GHZ,
             step_cycles=min(self._CPU_CYCLES_PER_KILOBYTE_GENERATE,
-                            self._CPU_CYCLES_PER_KILOBYTE_COMPUTE))
+                            self._CPU_CYCLES_PER_KILOBYTE_COMPUTE,
+                            self._CPU_CYCLES_PER_KILOBYTE_SEND,
+                            self._CPU_CYCLES_PER_KILOBYTE_RECEIVE))
 
         self.submission_queues = []
         self.completion_queues = []
@@ -141,6 +174,15 @@ class HostPlatform(Memorable):
             "num_commands_completed": 0,
             "total_data_bytes": 0
         }
+
+    def network_receive(self, data_packet):
+        event = yield self.__env.process(
+            self.__processor.submit(
+                Processor.Task(
+                    data_packet.id + "-RECEIVE", data_packet.queue_idx,
+                    data_packet.length * self._CPU_CYCLES_PER_KILOBYTE_RECEIVE,
+                    Processor.Task.PRIORITY_HIGH)))
+        return event
 
     def __process_command(self, queue_idx):
         while True:
@@ -307,5 +349,7 @@ if __name__ == "__main__":
         'SubmissionCommand', 'id, length, req_isp, selectivity, timestamp')
     CompletionCommand = namedtuple(
         'CompletionCommand', 'id, length, req_isp, ret_isp, submit_timestamp')
+
+    DataPacket = namedtuple('DataPacket', 'id, queue_idx, length')
 
     main()
